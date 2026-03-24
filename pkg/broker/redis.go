@@ -10,25 +10,25 @@ import (
 )
 
 type RedisBroker struct {
-	redisClient redis.Client
-	config      config.BrokerConfig
+	RedisClient redis.Client
+	Config      config.BrokerConfig
 }
 
 func (r *RedisBroker) Enqueue(ctx context.Context, task task.Task) error {
-	_, err := r.redisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+	_, err := r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 		pipe.HSet(ctx, task.ID, task)
-		pipe.ZAdd(ctx, r.config.SortedSet, redis.Z{Score: time.Hour.Seconds(), Member: task.ID})
-		pipe.LPush(ctx, r.config.PendingQueue, task.ID)
+		pipe.ZAdd(ctx, r.Config.SortedSet, redis.Z{Score: time.Hour.Seconds(), Member: task.ID})
+		pipe.LPush(ctx, r.Config.PendingQueue, task.ID)
 		return nil
 	})
 	return err
 }
 
 func (r *RedisBroker) Dequeue(ctx context.Context) (task.Task, error) {
-	taskID, err := r.redisClient.BLMove(
+	taskID, err := r.RedisClient.BLMove(
 		ctx,
-		r.config.PendingQueue,
-		r.config.ProcessingQueue,
+		r.Config.PendingQueue,
+		r.Config.ProcessingQueue,
 		"RIGHT", "LEFT",
 		0,
 	).Result()
@@ -37,7 +37,7 @@ func (r *RedisBroker) Dequeue(ctx context.Context) (task.Task, error) {
 	}
 
 	var getCmd *redis.MapStringStringCmd
-	_, err = r.redisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+	_, err = r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 		pipe.HSet(ctx, taskID,
 			"TaskStage", string(task.StageProcessing),
 			"UpdatedAt", time.Now().Unix(),
@@ -57,8 +57,8 @@ func (r *RedisBroker) Dequeue(ctx context.Context) (task.Task, error) {
 }
 
 func (r *RedisBroker) Ack(ctx context.Context, taskId string) error {
-	_, err := r.redisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-		pipe.LRem(ctx, r.config.ProcessingQueue, 1, taskId)
+	_, err := r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.LRem(ctx, r.Config.ProcessingQueue, 1, taskId)
 		pipe.HSet(ctx, taskId,
 			"TaskStage", string(task.StageCompleted),
 			"UpdatedAt", time.Now().Unix(),
@@ -78,14 +78,14 @@ pushes into two different pipelines
 func (r *RedisBroker) Nack(ctx context.Context, taskId string) error {
 	var attemptsCmd *redis.IntCmd
 	var maxRetriesCmd *redis.StringCmd
-	_, err := r.redisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+	_, err := r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 		attemptsCmd = pipe.HIncrBy(ctx, taskId, "Attempts", 1)
 		maxRetriesCmd = pipe.HGet(ctx, taskId, "MaxRetries")
 		pipe.HSet(ctx, taskId,
 			"TaskStage", string(task.StagePending),
 			"UpdatedAt", time.Now().Unix(),
 		)
-		pipe.LRem(ctx, r.config.ProcessingQueue, 1, taskId)
+		pipe.LRem(ctx, r.Config.ProcessingQueue, 1, taskId)
 		return nil
 	})
 
@@ -103,8 +103,8 @@ func (r *RedisBroker) Nack(ctx context.Context, taskId string) error {
 	}
 
 	if attempts > maxRetries {
-		_, err := r.redisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			pipe.LPush(ctx, r.config.DLQ, taskId)
+		_, err := r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.LPush(ctx, r.Config.DLQ, taskId)
 			pipe.HSet(ctx, taskId,
 				"TaskStage", string(task.StageFailed),
 				"UpdatedAt", time.Now().Unix(),
@@ -114,7 +114,7 @@ func (r *RedisBroker) Nack(ctx context.Context, taskId string) error {
 		return err
 
 	} else {
-		err := r.redisClient.LPush(ctx, r.config.PendingQueue, taskId).Err()
+		err := r.RedisClient.LPush(ctx, r.Config.PendingQueue, taskId).Err()
 		return err
 	}
 }

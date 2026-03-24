@@ -20,3 +20,21 @@ type WorkerPoolConfig struct {
 	TaskTimeout time.Duration
 	RetryDelay  time.Duration
 }
+
+func GetDefaultBrokerConfig() BrokerConfig {
+	return BrokerConfig{
+		PendingQueue:    "task-queue:pending",
+		ProcessingQueue: "task-queue:processing",
+		DLQ:             "task-queue:dlq",
+		SortedSet:       "task-set",
+	}
+}
+
+func GetDefaultWorkerPoolConfig() WorkerPoolConfig {
+	return WorkerPoolConfig{
+		Concurrency: 5,
+		PollTimeout: 5 * time.Second,
+		TaskTimeout: 5 * time.Second,
+		RetryDelay:  500 * time.Millisecond,
+	}
+}

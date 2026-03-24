@@ -30,16 +30,17 @@ type Task struct {
 	Timeout    time.Duration // Timeout in milliseconds
 }
 
+type TaskRequestPayload struct {
+	TaskName string
+	Payload []byte
+}
+
+
 
 func NewTask(name string,payload []byte,config config.TaskConfig) (Task,error) {
 
 	if name == "" {
 		err := errors.New("Invalid Name")
-		return Task{},err
-	}
-
-	if len(payload) == 0 {
-		err := errors.New("Invalid Payload")
 		return Task{},err
 	}
 

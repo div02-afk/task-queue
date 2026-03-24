@@ -24,20 +24,21 @@ type WorkerPool struct {
 	workers []Worker
 }
 
-func CreateWorkerPool(config config.WorkerPoolConfig, registry registry.Registry, broker broker.Broker) {
+func CreateWorkerPool(config config.WorkerPoolConfig, registry *registry.Registry, broker broker.Broker) WorkerPool {
 	workerPool := WorkerPool{
 		workers: make([]Worker, 0),
 	}
 	for i := 0; i < config.Concurrency; i++ {
-		worker := CreateWorker(registry, broker, config.TaskTimeout, config.RetryDelay)
+		worker := createWorker(registry, broker, config.TaskTimeout, config.RetryDelay)
 		workerPool.workers = append(workerPool.workers, worker)
 	}
+	return workerPool
 }
 
-func CreateWorker(registry registry.Registry, broker broker.Broker, taskTimeout time.Duration, retryDelay time.Duration) Worker {
+func createWorker(registry *registry.Registry, broker broker.Broker, taskTimeout time.Duration, retryDelay time.Duration) Worker {
 	return Worker{
 		ID:          uuid.NewString(),
-		registry:    &registry,
+		registry:    registry,
 		broker:      broker,
 		TaskTimeout: taskTimeout,
 		RetryDelay:  retryDelay,
@@ -55,11 +56,23 @@ func (wp *WorkerPool) StartWorkers(bgctx context.Context) context.CancelFunc {
 
 func (w *Worker) Start(ctx context.Context) {
 	for {
-		task, err := w.broker.Dequeue(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		println("Worker" + w.ID + "Getting tasks")
+		dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		task, err := w.broker.Dequeue(dctx)
+		cancel()
 		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				continue
+			}
 			time.Sleep(w.RetryDelay)
 			continue
 		}
+
 		err = w.Process(ctx, task)
 		if err != nil {
 			w.broker.Nack(ctx, task.ID)
@@ -78,11 +91,7 @@ func (w *Worker) Process(parentCtx context.Context, task task.Task) error {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(parentCtx, task.Timeout)
-	defer cancel()
 	err := taskFunc(ctx, task.Payload)
-
-	if err != nil {
-		return err
-	}
-	return nil
+	cancel()
+	return err
 }
