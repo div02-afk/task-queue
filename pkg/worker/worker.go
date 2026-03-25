@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"log"
 	"time"
 
 	"github.com/div02-afk/task-queue/pkg/broker"
@@ -48,20 +49,42 @@ func createWorker(registry *registry.Registry, broker broker.Broker, taskTimeout
 func (wp *WorkerPool) StartWorkers(bgctx context.Context) context.CancelFunc {
 	ctx, cancel := context.WithCancel(bgctx)
 	for i := 0; i < len(wp.workers); i++ {
-		go wp.workers[i].Start(ctx)
+		go wp.workers[i].superwiseWorker(ctx)
 	}
 
 	return cancel
 }
 
-func (w *Worker) Start(ctx context.Context) {
+func (w *Worker) superwiseWorker(ctx context.Context) {
+	for {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Println("Worker ",w.ID," failed, restarting",r)
+				}
+			}()
+
+			//This blocks until a worker fails
+			w.start(ctx)
+		}()
+
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+	}
+}
+
+func (w *Worker) start(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
-		println("Worker" + w.ID + "Getting tasks")
+		log.Println("Worker" + w.ID + "Getting tasks")
 		dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		task, err := w.broker.Dequeue(dctx)
 		cancel()
