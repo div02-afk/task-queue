@@ -9,10 +9,12 @@ import (
 	"github.com/div02-afk/task-queue/pkg/broker"
 	"github.com/div02-afk/task-queue/pkg/config"
 	"github.com/div02-afk/task-queue/pkg/producer"
+	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
 )
 
 func main() {
+	godotenv.Load()
 	ctx := context.Background()
 	args := os.Args
 	if len(args) != 3 {

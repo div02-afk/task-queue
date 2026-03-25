@@ -60,7 +60,7 @@ func (w *Worker) superwiseWorker(ctx context.Context) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Println("Worker ",w.ID," failed, restarting",r)
+					log.Println("Worker ", w.ID, " failed, restarting", r)
 				}
 			}()
 
@@ -84,33 +84,44 @@ func (w *Worker) start(ctx context.Context) {
 			return
 		default:
 		}
-		log.Println("Worker" + w.ID + "Getting tasks")
-		dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		task, err := w.broker.Dequeue(dctx)
-		cancel()
+		log.Println("Worker: ", w.ID, " fetching task from broker")
+		task, err := w.broker.Dequeue(ctx)
 		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) {
-				continue
-			}
+			log.Println("Dequeue failed with error: ", err)
 			time.Sleep(w.RetryDelay)
 			continue
 		}
 
 		err = w.Process(ctx, task)
 		if err != nil {
+			log.Println("Task: ", task.ID, " failed with error: ", err, " retrying...")
 			w.broker.Nack(ctx, task.ID)
 			time.Sleep(w.RetryDelay)
 			continue
 		}
-		w.broker.Ack(ctx, task.ID)
+		err = w.broker.Ack(ctx, task.ID)
+		retryAck := 0
+		for retryAck < 3 && err != nil {
+			log.Println("Ack failed for task: ", task.ID, " retrying... ", retryAck)
+			err = w.broker.Ack(ctx, task.ID)
+			retryAck++
+		}
+		if err != nil {
+			log.Println("Ack failed for task: ", task.ID, " after 3 retries, moving to next task")
+		} else {
+			log.Println("Task: ", task.ID, " completed successfully")
+		}
+
+		// Sleep for a short duration before fetching the next task to prevent tight loop in case of continuous failures
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
-func (w *Worker) Process(parentCtx context.Context, task task.Task) error {
+func (w *Worker) Process(parentCtx context.Context, task *task.Task) error {
 	taskFunc, ok := w.registry.Get(task.TaskName)
 
 	if !ok {
-		err := errors.New("Task Function not found")
+		err := errors.New("Task Function not found: " + task.TaskName)
 		return err
 	}
 	ctx, cancel := context.WithTimeout(parentCtx, task.Timeout)

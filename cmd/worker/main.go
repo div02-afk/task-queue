@@ -18,6 +18,7 @@ import (
 
 func tempTaskFunc(ctx context.Context, payload json.RawMessage) error {
 	println("Executing Task with payload: ", string(payload))
+	time.Sleep(5*time.Second)
 	return nil
 }
 
