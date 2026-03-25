@@ -1,7 +1,8 @@
 package task
 
 import (
-	"errors"
+	"encoding/json"
+	"strconv"
 	"time"
 
 	"github.com/div02-afk/task-queue/pkg/config"
@@ -11,50 +12,89 @@ import (
 type TaskStage string
 
 const (
-    StagePending    TaskStage = "pending"
-    StageProcessing TaskStage = "in_progress"
-    StageCompleted  TaskStage = "completed"
-    StageFailed     TaskStage = "failed"
+	StagePending    TaskStage = "pending"
+	StageProcessing TaskStage = "in_progress"
+	StageCompleted  TaskStage = "completed"
+	StageFailed     TaskStage = "failed"
 )
 
 type Task struct {
-	ID         string
-	TaskName   string
-	TaskVersion int // Version number for the task, useful for tracking changes or updates
-	TaskStage  TaskStage // e.g., "pending", "in_progress", "completed", "failed"
-	Payload    []byte
-	CreatedAt  time.Time // Timestamp when the task was created
-	UpdatedAt  time.Time // Timestamp when the task was last updated
-	Attempts   int
-	MaxRetries int
-	Timeout    time.Duration // Timeout in milliseconds
+	ID          string          `json:"id"`
+	TaskName    string          `json:"task_name"`
+	TaskVersion int             `json:"task_version"` // Version number for the task, useful for tracking changes or updates
+	TaskStage   TaskStage       `json:"task_stage"`   // e.g., "pending", "in_progress", "completed", "failed"
+	Payload     json.RawMessage `json:"payload"`
+	CreatedAt   time.Time       `json:"created_at"`  // Timestamp when the task was created
+	UpdatedAt   time.Time       `json:"updated_at"`  // Timestamp when the task was last updated
+	Attempts    int             `json:"attempts"`    // Number of attempts made to process the task
+	MaxRetries  int             `json:"max_retries"` // Maximum number of retry attempts allowed for the task
+	Timeout     time.Duration   `json:"timeout"`     // Timeout in milliseconds
 }
 
 type TaskRequestPayload struct {
 	TaskName string
-	Payload []byte
+	Payload  json.RawMessage
 }
 
-
-
-func NewTask(name string,payload []byte,config config.TaskConfig) (Task,error) {
-
-	if name == "" {
-		err := errors.New("Invalid Name")
-		return Task{},err
-	}
-
-	task := &Task{
-		ID: uuid.NewString(),
-		TaskName: name,
-		TaskStage: "pending",
-		Payload: payload,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-		Attempts: 0,
+func NewTask(name string, payload json.RawMessage, config *config.TaskConfig) *Task {
+	return &Task{
+		ID:         uuid.NewString(),
+		TaskName:   name,
+		TaskStage:  "pending",
+		Payload:    payload,
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+		Attempts:   0,
 		MaxRetries: config.MaxRetries,
-		Timeout: config.Timeout,
+		Timeout:    config.Timeout,
+	}
+}
+
+func (t *Task) ToMap() map[string]interface{} {
+	return map[string]interface{}{
+		"id":           t.ID,
+		"task_name":    t.TaskName,
+		"task_version": t.TaskVersion,
+		"task_stage":   string(t.TaskStage),
+		"payload":      string(t.Payload),
+		"created_at":   t.CreatedAt.Format(time.RFC3339),
+		"updated_at":   t.UpdatedAt.Format(time.RFC3339),
+		"attempts":     t.Attempts,
+		"max_retries":  t.MaxRetries,
+		"timeout":      t.Timeout.String(),
+	}
+}
+
+func FromMap(fields map[string]string) (*Task, error) {
+	createdAt, err := time.Parse(time.RFC3339, fields["created_at"])
+	if err != nil {
+		return nil, err
 	}
 
-	return *task, nil;
+	updatedAt, err := time.Parse(time.RFC3339, fields["updated_at"])
+	if err != nil {
+		return nil, err
+	}
+
+	timeout, err := time.ParseDuration(fields["timeout"])
+	if err != nil {
+		return nil, err
+	}
+
+	taskVersion, _ := strconv.Atoi(fields["task_version"])
+	attempts, _ := strconv.Atoi(fields["attempts"])
+	maxRetries, _ := strconv.Atoi(fields["max_retries"])
+
+	return &Task{
+		ID:          fields["id"],
+		TaskName:    fields["task_name"],
+		TaskVersion: taskVersion,
+		TaskStage:   TaskStage(fields["task_stage"]),
+		Payload:     json.RawMessage(fields["payload"]),
+		CreatedAt:   createdAt,
+		UpdatedAt:   updatedAt,
+		Attempts:    attempts,
+		MaxRetries:  maxRetries,
+		Timeout:     timeout,
+	}, nil
 }

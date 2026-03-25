@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"github.com/div02-afk/task-queue/pkg/config"
@@ -11,16 +12,23 @@ import (
 
 type RedisBroker struct {
 	RedisClient redis.Client
-	Config      config.BrokerConfig
+	Config      *config.BrokerConfig
 }
 
-func (r *RedisBroker) Enqueue(ctx context.Context, task task.Task) error {
-	_, err := r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-		pipe.HSet(ctx, task.ID, task)
-		pipe.ZAdd(ctx, r.Config.SortedSet, redis.Z{Score: time.Hour.Seconds(), Member: task.ID})
+func (r *RedisBroker) Enqueue(ctx context.Context, task *task.Task) error {
+	cmds, err := r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.HSet(ctx, task.ID, task.ToMap())
+		pipe.ZAdd(ctx, r.Config.SortedSet, redis.Z{Score: float64(time.Now().Unix()), Member: task.ID})
 		pipe.LPush(ctx, r.Config.PendingQueue, task.ID)
 		return nil
 	})
+
+	// check which command failed
+	for i, cmd := range cmds {
+		if cmd.Err() != nil {
+			log.Printf("cmd[%d] %s failed: %v", i, cmd.FullName(), cmd.Err())
+		}
+	}
 	return err
 }
 
@@ -39,8 +47,8 @@ func (r *RedisBroker) Dequeue(ctx context.Context) (task.Task, error) {
 	var getCmd *redis.MapStringStringCmd
 	_, err = r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 		pipe.HSet(ctx, taskID,
-			"TaskStage", string(task.StageProcessing),
-			"UpdatedAt", time.Now().Unix(),
+			"task_stage", string(task.StageProcessing),
+			"updated_at", time.Now().Format(time.RFC3339),
 		)
 		getCmd = pipe.HGetAll(ctx, taskID)
 		return nil
@@ -49,19 +57,25 @@ func (r *RedisBroker) Dequeue(ctx context.Context) (task.Task, error) {
 		return task.Task{}, err
 	}
 
-	var t task.Task
-	if err := getCmd.Scan(&t); err != nil {
+	fields, err := getCmd.Result()
+	if err != nil {
 		return task.Task{}, err
 	}
-	return t, nil
+
+	t, err := task.FromMap(fields)
+	if err != nil {
+		return task.Task{}, err
+	}
+
+	return *t, nil
 }
 
 func (r *RedisBroker) Ack(ctx context.Context, taskId string) error {
 	_, err := r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 		pipe.LRem(ctx, r.Config.ProcessingQueue, 1, taskId)
 		pipe.HSet(ctx, taskId,
-			"TaskStage", string(task.StageCompleted),
-			"UpdatedAt", time.Now().Unix(),
+			"task_stage", string(task.StageCompleted),
+			"updated_at", time.Now().Format(time.RFC3339),
 		)
 		return nil
 	})
@@ -79,11 +93,11 @@ func (r *RedisBroker) Nack(ctx context.Context, taskId string) error {
 	var attemptsCmd *redis.IntCmd
 	var maxRetriesCmd *redis.StringCmd
 	_, err := r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-		attemptsCmd = pipe.HIncrBy(ctx, taskId, "Attempts", 1)
-		maxRetriesCmd = pipe.HGet(ctx, taskId, "MaxRetries")
+		attemptsCmd = pipe.HIncrBy(ctx, taskId, "attempts", 1)
+		maxRetriesCmd = pipe.HGet(ctx, taskId, "max_retries")
 		pipe.HSet(ctx, taskId,
-			"TaskStage", string(task.StagePending),
-			"UpdatedAt", time.Now().Unix(),
+			"task_stage", string(task.StagePending),
+			"updated_at", time.Now().Format(time.RFC3339),
 		)
 		pipe.LRem(ctx, r.Config.ProcessingQueue, 1, taskId)
 		return nil
@@ -106,8 +120,8 @@ func (r *RedisBroker) Nack(ctx context.Context, taskId string) error {
 		_, err := r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.LPush(ctx, r.Config.DLQ, taskId)
 			pipe.HSet(ctx, taskId,
-				"TaskStage", string(task.StageFailed),
-				"UpdatedAt", time.Now().Unix(),
+				"task_stage", string(task.StageFailed),
+				"updated_at", time.Now().Format(time.RFC3339),
 			)
 			return nil
 		})

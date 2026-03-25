@@ -25,7 +25,7 @@ type WorkerPool struct {
 	workers []Worker
 }
 
-func CreateWorkerPool(config config.WorkerPoolConfig, registry *registry.Registry, broker broker.Broker) WorkerPool {
+func CreateWorkerPool(config *config.WorkerPoolConfig, registry *registry.Registry, broker broker.Broker) WorkerPool {
 	workerPool := WorkerPool{
 		workers: make([]Worker, 0),
 	}

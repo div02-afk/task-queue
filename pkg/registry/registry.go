@@ -2,9 +2,10 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 )
 
-type TaskFunc func(ctx context.Context, payload []byte) error
+type TaskFunc func(ctx context.Context, payload json.RawMessage) error
 
 type Registry struct {
 	tasks map[string]TaskFunc

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/signal"
 	"syscall"
@@ -14,6 +15,11 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
 )
+
+func tempTaskFunc(ctx context.Context, payload json.RawMessage) error {
+	println("Executing Task with payload: ", string(payload))
+	return nil
+}
 
 func main() {
 	print("Starting")
@@ -35,7 +41,8 @@ func main() {
 	}
 
 	registry := registry.NewRegistry()
-
+	registry.Register("task_1", tempTaskFunc)
+	println("Registry Created and Task Registered")
 	workerPool := worker.CreateWorkerPool(
 		workerPoolConfig,
 		registry,

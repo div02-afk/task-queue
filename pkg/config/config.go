@@ -21,8 +21,8 @@ type WorkerPoolConfig struct {
 	RetryDelay  time.Duration
 }
 
-func GetDefaultBrokerConfig() BrokerConfig {
-	return BrokerConfig{
+func GetDefaultBrokerConfig() *BrokerConfig {
+	return &BrokerConfig{
 		PendingQueue:    "task-queue:pending",
 		ProcessingQueue: "task-queue:processing",
 		DLQ:             "task-queue:dlq",
@@ -30,11 +30,18 @@ func GetDefaultBrokerConfig() BrokerConfig {
 	}
 }
 
-func GetDefaultWorkerPoolConfig() WorkerPoolConfig {
-	return WorkerPoolConfig{
+func GetDefaultWorkerPoolConfig() *WorkerPoolConfig {
+	return &WorkerPoolConfig{
 		Concurrency: 5,
 		PollTimeout: 5 * time.Second,
 		TaskTimeout: 5 * time.Second,
 		RetryDelay:  500 * time.Millisecond,
+	}
+}
+
+func GetDefaultTaskConfig() *TaskConfig {
+	return &TaskConfig{
+		MaxRetries: 5,
+		Timeout: 5*time.Second,
 	}
 }
