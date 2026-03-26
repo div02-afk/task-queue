@@ -29,29 +29,32 @@ type Task struct {
 	Attempts    int             `json:"attempts"`    // Number of attempts made to process the task
 	MaxRetries  int             `json:"max_retries"` // Maximum number of retry attempts allowed for the task
 	Timeout     time.Duration   `json:"timeout"`     // Timeout in milliseconds
+	ScheduledAt time.Time   `json:"scheduled_at"`
 }
 
 type TaskRequestPayload struct {
 	TaskName string
 	Payload  json.RawMessage
+	ScheduledAt time.Time
 }
 
-func NewTask(name string, payload json.RawMessage, config *config.TaskConfig) *Task {
+func NewTask(taskRequest *TaskRequestPayload, config *config.TaskConfig) *Task {
 	return &Task{
 		ID:         uuid.NewString(),
-		TaskName:   name,
+		TaskName:   taskRequest.TaskName,
 		TaskStage:  "pending",
-		Payload:    payload,
+		Payload:    taskRequest.Payload,
 		CreatedAt:  time.Now(),
 		UpdatedAt:  time.Now(),
 		Attempts:   0,
 		MaxRetries: config.MaxRetries,
 		Timeout:    config.Timeout,
+		ScheduledAt: taskRequest.ScheduledAt,
 	}
 }
 
-func (t *Task) ToMap() map[string]interface{} {
-	return map[string]interface{}{
+func (t *Task) ToMap() map[string]any {
+	return map[string]any{
 		"id":           t.ID,
 		"task_name":    t.TaskName,
 		"task_version": t.TaskVersion,
@@ -62,6 +65,7 @@ func (t *Task) ToMap() map[string]interface{} {
 		"attempts":     t.Attempts,
 		"max_retries":  t.MaxRetries,
 		"timeout":      t.Timeout.String(),
+		"scheduled_at" : t.ScheduledAt.Format(time.RFC3339),
 	}
 }
 
@@ -81,6 +85,11 @@ func FromMap(fields map[string]string) (*Task, error) {
 		return nil, err
 	}
 
+	scheduledAt,err := time.Parse(time.RFC3339, fields["scheduled_at"])
+	if err != nil {
+		return nil,err
+	}
+
 	taskVersion, _ := strconv.Atoi(fields["task_version"])
 	attempts, _ := strconv.Atoi(fields["attempts"])
 	maxRetries, _ := strconv.Atoi(fields["max_retries"])
@@ -96,5 +105,6 @@ func FromMap(fields map[string]string) (*Task, error) {
 		Attempts:    attempts,
 		MaxRetries:  maxRetries,
 		Timeout:     timeout,
+		ScheduledAt: scheduledAt,
 	}, nil
 }

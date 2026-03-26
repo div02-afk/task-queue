@@ -2,7 +2,6 @@ package producer
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/div02-afk/task-queue/pkg/broker"
 	"github.com/div02-afk/task-queue/pkg/config"
@@ -17,12 +16,29 @@ type Producer struct {
 Accepts a validated taskName and payload
 Enqueues task, returns taskId,error
 */
-func (p *Producer) AddTask(ctx context.Context, taskName string, payload json.RawMessage) (string, error) {
+func (p *Producer) AddTask(ctx context.Context, taskRequest *task.TaskRequestPayload) (string, error) {
 
 	taskConfig := config.GetDefaultTaskConfig()
 
-	task := task.NewTask(taskName, payload, taskConfig)
+	task := task.NewTask(taskRequest, taskConfig)
 	err := p.Broker.Enqueue(ctx, task)
+
+	if err != nil {
+		return "", err
+	}
+	return task.ID, nil
+}
+
+/*
+Accepts a validated taskName and payload
+Schedules task, returns taskId,error
+*/
+func (p *Producer) ScheduleTask(ctx context.Context, taskRequest *task.TaskRequestPayload) (string, error) {
+
+	taskConfig := config.GetDefaultTaskConfig()
+
+	task := task.NewTask(taskRequest, taskConfig)
+	err := p.Broker.Schedule(ctx, task)
 
 	if err != nil {
 		return "", err

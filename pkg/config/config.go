@@ -11,7 +11,9 @@ type BrokerConfig struct {
 	PendingQueue    string
 	ProcessingQueue string
 	DLQ             string
-	SortedSet       string
+	FinishedQueue   string
+	TimeoutSet      string
+	ScheduledSet    string
 }
 
 type WorkerPoolConfig struct {
@@ -21,12 +23,18 @@ type WorkerPoolConfig struct {
 	RetryDelay  time.Duration
 }
 
+type ReaperConfig struct {
+	PollInterval time.Duration
+}
+
 func GetDefaultBrokerConfig() *BrokerConfig {
 	return &BrokerConfig{
 		PendingQueue:    "task-queue:pending",
 		ProcessingQueue: "task-queue:processing",
+		FinishedQueue:   "task-queue:finished",
 		DLQ:             "task-queue:dlq",
-		SortedSet:       "task-set",
+		TimeoutSet:      "task-set:timeout",
+		ScheduledSet:    "task-set:scheduled",
 	}
 }
 
@@ -42,6 +50,12 @@ func GetDefaultWorkerPoolConfig() *WorkerPoolConfig {
 func GetDefaultTaskConfig() *TaskConfig {
 	return &TaskConfig{
 		MaxRetries: 5,
-		Timeout: 5*time.Second,
+		Timeout:    5 * time.Second,
+	}
+}
+
+func GetDefaultReaperConfig() *ReaperConfig {
+	return &ReaperConfig{
+		PollInterval: 30 * time.Second,
 	}
 }
