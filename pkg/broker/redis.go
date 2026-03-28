@@ -2,11 +2,13 @@ package broker
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strconv"
 	"time"
 
 	"github.com/div02-afk/task-queue/pkg/config"
+	"github.com/div02-afk/task-queue/pkg/cron_helper"
 	"github.com/div02-afk/task-queue/pkg/task"
 	"github.com/redis/go-redis/v9"
 )
@@ -163,7 +165,7 @@ func (r *RedisBroker) GetTimedOutTaskIds(ctx context.Context) ([]string, error) 
 func (r *RedisBroker) Schedule(ctx context.Context, task *task.Task) error {
 	cmds, err := r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 		pipe.HSet(ctx, task.ID, task.ToMap())
-		pipe.ZAdd(ctx, r.Config.TimeoutSet, redis.Z{Score: (float64((task).ScheduledAt.Unix())), Member: task.ID}).Err()
+		pipe.ZAdd(ctx, r.Config.ScheduledSet, redis.Z{Score: (float64((task).NextRunAt.Unix())), Member: task.ID}).Err()
 		return nil
 	})
 
@@ -183,11 +185,12 @@ func (r *RedisBroker) GetScheduledTaskIds(ctx context.Context) ([]string, error)
 	tasks, err := r.RedisClient.ZRangeArgs(ctx, redis.ZRangeArgs{
 		ByScore: true,
 		Stop:    strconv.FormatFloat(float64(time.Now().Unix()), 'f', 0, 64),
-		Start:   0,
+		Start:   "-inf",
 		Key:     r.Config.ScheduledSet,
 	}).Result()
 
 	if err != nil {
+		log.Println("Error fetching scheduled tasks: ", err)
 		return []string{}, err
 	}
 	return tasks, nil
@@ -217,28 +220,91 @@ func (r *RedisBroker) AddToPending(ctx context.Context, taskId string) error {
 	return err
 }
 
-
 /*
-	Adds taskId to Pending Queue
-	Removes taskId from scheduled zset
-	Used for scheduled tasks (single execution)
+Adds taskId to Pending Queue
+Removes taskId from scheduled zset
+Used for scheduled tasks (single execution)
 */
 func (r *RedisBroker) HandleScheduledTask(ctx context.Context, taskId string) error {
-	cmds, err := r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-		pipe.LPush(ctx, r.Config.PendingQueue, taskId)
-		pipe.HSet(ctx, taskId,
-			"task_stage", string(task.StagePending),
-			"updated_at", time.Now().Format(time.RFC3339),
-		)
-		pipe.ZRem(ctx, r.Config.ScheduledSet, taskId)
-		return nil
-	})
+	vals, err := r.RedisClient.HMGet(ctx, taskId, "task_kind", "cron_expr").Result()
+	if err != nil {
+		log.Println("Error getting scheduled task: ", taskId)
+		return err
+	}
+	if len(vals) < 2 || vals[0] == nil {
+		return fmt.Errorf("missing required metadata for task %s", taskId)
+	}
 
-	// check which command failed
-	for i, cmd := range cmds {
-		if cmd.Err() != nil {
-			log.Printf("cmd[%d] %s failed: %v", i, cmd.FullName(), cmd.Err())
+	taskKindStr, ok := vals[0].(string)
+	if !ok {
+		return fmt.Errorf("invalid task_kind type for task %s", taskId)
+	}
+	taskKindInt, err := strconv.Atoi(taskKindStr)
+	if err != nil {
+		return fmt.Errorf("invalid task_kind value for task %s: %w", taskId, err)
+	}
+	taskKind := task.TaskKind(taskKindInt)
+
+	logPipelineErrors := func(cmds []redis.Cmder) {
+		for i, cmd := range cmds {
+			if cmd.Err() != nil {
+				log.Printf("cmd[%d] %s failed: %v", i, cmd.FullName(), cmd.Err())
+			}
 		}
 	}
-	return err
+
+	requeue := func(extraFields map[string]string, extraOp func(redis.Pipeliner)) error {
+		now := time.Now().Format(time.RFC3339)
+		cmds, txErr := r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.LPush(ctx, r.Config.PendingQueue, taskId)
+
+			hsetArgs := make([]interface{}, 0, 4+len(extraFields)*2)
+			hsetArgs = append(hsetArgs,
+				"task_stage", string(task.StagePending),
+				"updated_at", now,
+			)
+			for k, v := range extraFields {
+				hsetArgs = append(hsetArgs, k, v)
+			}
+
+			pipe.HSet(ctx, taskId, hsetArgs...)
+			if extraOp != nil {
+				extraOp(pipe)
+			}
+			return nil
+		})
+
+		logPipelineErrors(cmds)
+		return txErr
+	}
+
+	switch taskKind {
+	case task.KindCron:
+		if len(vals) < 2 || vals[1] == nil {
+			return fmt.Errorf("missing cron_expr for task %s", taskId)
+		}
+		cronExpr, ok := vals[1].(string)
+		if !ok {
+			return fmt.Errorf("invalid cron_expr type for task %s", taskId)
+		}
+
+		nextRunAt, err := cron_helper.GetNextRunAt(cronExpr)
+		if err != nil {
+			return fmt.Errorf("Invalid Cron expression %s for task %s", cronExpr, taskId)
+		}
+		return requeue(
+			map[string]string{"next_run_at": nextRunAt.Format(time.RFC3339)},
+			func(pipe redis.Pipeliner) {
+				pipe.ZAdd(ctx, r.Config.ScheduledSet, redis.Z{Score: float64(nextRunAt.Unix()), Member: taskId})
+			},
+		)
+
+	case task.KindScheduled:
+		return requeue(nil, func(pipe redis.Pipeliner) {
+			pipe.ZRem(ctx, r.Config.ScheduledSet, taskId)
+		})
+
+	default:
+		return fmt.Errorf("unsupported task kind %d for task %s", taskKind, taskId)
+	}
 }

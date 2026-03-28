@@ -40,7 +40,7 @@ func GetDefaultBrokerConfig() *BrokerConfig {
 
 func GetDefaultWorkerPoolConfig() *WorkerPoolConfig {
 	return &WorkerPoolConfig{
-		Concurrency: 5,
+		Concurrency: 20,
 		PollTimeout: 5 * time.Second,
 		TaskTimeout: 5 * time.Second,
 		RetryDelay:  500 * time.Millisecond,
