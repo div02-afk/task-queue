@@ -1,92 +1,128 @@
 # task-queue
 
-`task-queue` is a small Go-based background job queue built around Redis. It provides a producer for enqueuing jobs, a worker process for consuming and executing them, and supporting components for scheduling and timeout recovery.
+`task-queue` is a small Go-based background job queue built around Redis. It currently supports:
 
-This repository is under active development and should be treated as a learning exercise rather than a production-ready system. The architecture, APIs, task model, and operational details are expected to change significantly as the project evolves.
+- immediate tasks
+- one-off scheduled tasks
+- cron-style recurring tasks
+- worker execution with retries and acknowledgements
+- a scheduler loop for promoting due tasks
+- a reaper loop for timed-out task inspection
 
-## What this project is
-
-At a high level, the project models a task pipeline like this:
-
-- A client or caller submits work through the producer.
-- The broker stores task state and queue metadata in Redis.
-- Workers pull tasks, execute registered task handlers, and acknowledge or retry them.
-- A scheduler moves due scheduled tasks into the pending queue.
-- A reaper watches for timed-out work.
-
-The current architecture diagram lives in [arch.svg](./arch.svg).
+This repository is still evolving and should be treated as a learning project rather than a production-ready queue.
 
 ## Architecture
 
+The latest architecture diagram lives in [arch.svg](./arch.svg).
+
 ![task-queue architecture](./arch.svg)
 
-The system currently follows this flow:
+The current runtime is organized like this:
 
-1. A client submits work to the producer.
-2. The producer creates a task payload and stores it through the broker.
-3. Redis keeps queue state and task metadata for pending, processing, finished, scheduled, timeout, and DLQ flows.
-4. Workers pull tasks from the pending queue, execute the registered handler, then `Ack` on success or `Nack` on failure.
-5. The scheduler moves due scheduled tasks back into the pending queue.
-6. The reaper watches timed-out work and is intended to support recovery and cleanup.
+1. A client submits a task request to `cmd/producer`.
+2. The producer enriches the request with task metadata and writes it through the Redis-backed broker.
+3. Redis stores each task as a hash and tracks task IDs across queue and sorted-set structures.
+4. `cmd/worker` starts a worker pool and an embedded scheduler loop.
+5. Workers block on the pending queue, move tasks into processing, execute registered handlers, then `Ack` or `Nack`.
+6. The scheduler polls scheduled tasks and requeues due one-off and cron tasks into the pending queue.
+7. `cmd/reaper` polls for expired task timeouts. Recovery and cleanup are still incomplete.
 
-## Project modules
+Task handlers are regular Go functions today. WASM-based task execution is planned, but it is not part of the current runtime yet.
+
+## Components
 
 ### Commands
 
 - `cmd/producer`
-  Enqueues a task into Redis. Today it accepts a task name and a JSON payload from the command line.
+  Accepts CLI flags, builds a task request, and either enqueues or schedules the task.
 
 - `cmd/worker`
-  Starts the worker pool and the scheduler. It currently registers a sample task named `task_1`.
+  Starts the worker pool, registers task handlers, and runs the scheduler loop in the same process.
 
 - `cmd/reaper`
-  Runs the reaper loop for timed-out tasks.
+  Starts the timeout reaper loop.
 
 ### Packages
 
 - `pkg/task`
-  Task model, task stages, task serialization, and task creation.
+  Core task model, stages, kinds, and Redis serialization helpers.
 
 - `pkg/producer`
-  Producer logic for adding immediate and scheduled tasks.
+  Creates tasks from request payloads and sends them to the broker.
 
 - `pkg/broker`
-  Broker interface plus the Redis-backed implementation used by the project.
+  Broker interface plus the Redis implementation for enqueue, dequeue, ack/nack, scheduling, and timeout lookups.
 
 - `pkg/worker`
-  Worker and worker-pool logic, including dequeue, execution, retry, and ack/nack handling.
+  Worker pool, task processing loop, retry handling, and handler dispatch.
 
 - `pkg/registry`
-  In-memory registry that maps task names to Go handler functions.
+  In-memory mapping from task names to Go handler functions.
 
 - `pkg/scheduler`
-  Polls scheduled tasks and moves ready tasks into the pending queue.
+  Polls the scheduled set and promotes due tasks into the pending queue.
 
 - `pkg/reaper`
-  Polls for timed-out tasks. This area is still incomplete and currently acts as a starting point for timeout recovery.
+  Polls the timeout set for expired tasks. The actual timeout recovery path is not finished yet.
 
 - `pkg/config`
-  Default queue names, concurrency, retry, timeout, and reaper settings.
+  Default queue names and worker/task settings.
+
+## Redis Data Model
+
+Each task is stored as a Redis hash keyed by task ID. Redis also tracks task IDs in:
+
+- `task-queue:pending`
+- `task-queue:processing`
+- `task-queue:finished`
+- `task-queue:dlq`
+- `task-set:scheduled`
+- `task-set:timeout`
+
+Current task kinds:
+
+- `0`: immediate
+- `1`: scheduled
+- `2`: cron
+
+Current task stages:
+
+- `pending`
+- `in_progress`
+- `completed`
+- `failed`
+
+## How It Runs Today
+
+- Producer:
+  Creates a task with default metadata such as retry count and timeout, then either pushes it to the pending queue or stores it in the scheduled set.
+
+- Worker pool:
+  Uses a Redis blocking move from pending to processing, executes the registered handler, and then acknowledges success or requeues/fails the task on error.
+
+- Scheduler:
+  Polls the scheduled set, promotes due tasks, and for cron tasks computes the next run before re-adding them to the scheduled set.
+
+- Reaper:
+  Reads expired task IDs from the timeout set and logs them. Moving timed-out tasks to the DLQ is still a TODO in code.
 
 ## Requirements
 
-- Go `1.25.6` or later
-- Redis `7.x` or later
-- Docker and Docker Compose, if you want Redis managed locally through containers
+- Go `1.25.6`
+- Redis `7.x`
+- Docker and Docker Compose if you want a local Redis container
 
-## How to run the project
+## Run Locally
 
 ### 1. Start Redis
-
-Using Docker Compose:
 
 ```sh
 docker compose up -d redis
 ```
 
-### 2. Create environment variables
+### 2. Configure environment
 
-Create a `.env` file from `.env.example` and set the Redis address:
+Create `.env` from `.env.example`:
 
 ```env
 REDIS_URL=localhost:6379
@@ -98,7 +134,10 @@ REDIS_URL=localhost:6379
 go run ./cmd/worker
 ```
 
-This process currently also starts the scheduler.
+Notes:
+
+- This process also starts the scheduler loop.
+- The sample worker currently registers only `task_1`.
 
 ### 4. Start the reaper
 
@@ -108,51 +147,46 @@ In another terminal:
 go run ./cmd/reaper
 ```
 
-### 5. Enqueue a task
+### 5. Produce tasks
 
-In another terminal:
-
-```sh
-go run ./cmd/producer task_1 "{\"message\":\"hello\"}"
-```
-
-Notes about the current implementation:
-
-- The worker currently registers only one sample task: `task_1`.
-- The producer CLI requires exactly two arguments: `<task_name>` and `<json_payload>`.
-- Scheduling support exists in the codebase, but the CLI path is still basic and not fully exposed yet.
-- Timeout reaping and dead-letter handling are still under development.
-
-## Queue and processing model
-
-The current code and `arch.svg` indicate Redis is used to track task state across:
-
-- pending
-- processing
-- finished
-- DLQ
-
-Redis is also used for scheduled-task and timeout metadata.
-
-## Development setup
-
-Install dependencies with Go modules in the usual way once network access is available:
+Immediate task:
 
 ```sh
-go mod download
+go run ./cmd/producer -task task_1 -payload "{\"message\":\"hello\"}" -kind 0
 ```
 
-Then run the commands shown above. If you add a new task type, register it in the worker registry before producing that task.
+Scheduled task:
 
-## Contributing
+```sh
+go run ./cmd/producer -task task_1 -payload "{\"message\":\"later\"}" -kind 1 -scheduled_at 2026-03-29T12:00:00+05:30
+```
 
-Contributions are welcome while the project is still taking shape. For now, standard open-source expectations apply:
+Cron task:
 
-- Open an issue or start a discussion before large changes.
-- Keep pull requests focused and easy to review.
-- Update documentation when behavior changes.
-- Add tests where practical.
-- Be respectful and constructive in issues, reviews, and discussions.
+```sh
+go run ./cmd/producer -task task_1 -payload "{\"message\":\"repeat\"}" -kind 2 -cron "*/10 * * * * *"
+```
+
+Notes:
+
+- Scheduled tasks require an RFC3339 timestamp in the future.
+- Cron tasks use the `robfig/cron` parser with seconds enabled, so the expression is six-field.
+
+## Current Status
+
+Implemented now:
+
+- Redis-backed enqueue/dequeue flow
+- task retries via `Nack`
+- finished queue on `Ack`
+- scheduled and cron task promotion
+- timeout tracking via a Redis sorted set
+
+Coming soon:
+
+- timed-out task recovery and DLQ cleanup in the reaper
+- stronger validation and broker-side atomicity improvements
+- WASM-based task execution
 
 ## License
 
