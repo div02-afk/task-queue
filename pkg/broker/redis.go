@@ -18,9 +18,13 @@ type RedisBroker struct {
 	Config      *config.BrokerConfig
 }
 
+func (r *RedisBroker) taskHashKey(taskID string) string {
+	return fmt.Sprintf("%s:%s", r.Config.HashKeyPrefix, taskID)
+}
+
 func (r *RedisBroker) Enqueue(ctx context.Context, task *task.Task) error {
 	cmds, err := r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-		pipe.HSet(ctx, task.ID, task.ToMap())
+		pipe.HSet(ctx, r.taskHashKey(task.ID), task.ToMap())
 		pipe.LPush(ctx, r.Config.PendingQueue, task.ID)
 		return nil
 	})
@@ -48,11 +52,11 @@ func (r *RedisBroker) Dequeue(ctx context.Context) (*task.Task, error) {
 
 	var getCmd *redis.MapStringStringCmd
 	_, err = r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-		pipe.HSet(ctx, taskID,
+		pipe.HSet(ctx, r.taskHashKey(taskID),
 			"task_stage", string(task.StageProcessing),
 			"updated_at", time.Now().Format(time.RFC3339),
 		)
-		getCmd = pipe.HGetAll(ctx, taskID)
+		getCmd = pipe.HGetAll(ctx, r.taskHashKey(taskID))
 		return nil
 	})
 	if err != nil {
@@ -81,7 +85,7 @@ func (r *RedisBroker) Ack(ctx context.Context, taskId string) error {
 	cmds, err := r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 		pipe.LRem(ctx, r.Config.ProcessingQueue, 1, taskId)
 		pipe.LPush(ctx, r.Config.FinishedQueue, taskId)
-		pipe.HSet(ctx, taskId,
+		pipe.HSet(ctx, r.taskHashKey(taskId),
 			"task_stage", string(task.StageCompleted),
 			"updated_at", time.Now().Format(time.RFC3339),
 		)
@@ -108,9 +112,9 @@ func (r *RedisBroker) Nack(ctx context.Context, taskId string) error {
 	var attemptsCmd *redis.IntCmd
 	var maxRetriesCmd *redis.StringCmd
 	_, err := r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-		attemptsCmd = pipe.HIncrBy(ctx, taskId, "attempts", 1)
-		maxRetriesCmd = pipe.HGet(ctx, taskId, "max_retries")
-		pipe.HSet(ctx, taskId,
+		attemptsCmd = pipe.HIncrBy(ctx, r.taskHashKey(taskId), "attempts", 1)
+		maxRetriesCmd = pipe.HGet(ctx, r.taskHashKey(taskId), "max_retries")
+		pipe.HSet(ctx, r.taskHashKey(taskId),
 			"task_stage", string(task.StagePending),
 			"updated_at", time.Now().Format(time.RFC3339),
 		)
@@ -134,7 +138,7 @@ func (r *RedisBroker) Nack(ctx context.Context, taskId string) error {
 	if attempts > maxRetries {
 		_, err := r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.LPush(ctx, r.Config.DLQ, taskId)
-			pipe.HSet(ctx, taskId,
+			pipe.HSet(ctx, r.taskHashKey(taskId),
 				"task_stage", string(task.StageFailed),
 				"updated_at", time.Now().Format(time.RFC3339),
 			)
@@ -164,7 +168,7 @@ func (r *RedisBroker) GetTimedOutTaskIds(ctx context.Context) ([]string, error) 
 
 func (r *RedisBroker) Schedule(ctx context.Context, task *task.Task) error {
 	cmds, err := r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-		pipe.HSet(ctx, task.ID, task.ToMap())
+		pipe.HSet(ctx, r.taskHashKey(task.ID), task.ToMap())
 		pipe.ZAdd(ctx, r.Config.ScheduledSet, redis.Z{Score: (float64((task).NextRunAt.Unix())), Member: task.ID}).Err()
 		return nil
 	})
@@ -204,7 +208,7 @@ Used by scheduled and cron tasks
 func (r *RedisBroker) AddToPending(ctx context.Context, taskId string) error {
 	cmds, err := r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 		pipe.LPush(ctx, r.Config.PendingQueue, taskId)
-		pipe.HSet(ctx, taskId,
+		pipe.HSet(ctx, r.taskHashKey(taskId),
 			"task_stage", string(task.StagePending),
 			"updated_at", time.Now().Format(time.RFC3339),
 		)
@@ -226,7 +230,7 @@ Removes taskId from scheduled zset
 Used for scheduled tasks (single execution)
 */
 func (r *RedisBroker) HandleScheduledTask(ctx context.Context, taskId string) error {
-	vals, err := r.RedisClient.HMGet(ctx, taskId, "task_kind", "cron_expr").Result()
+	vals, err := r.RedisClient.HMGet(ctx, r.taskHashKey(taskId), "task_kind", "cron_expr").Result()
 	if err != nil {
 		log.Println("Error getting scheduled task: ", taskId)
 		return err
@@ -267,7 +271,7 @@ func (r *RedisBroker) HandleScheduledTask(ctx context.Context, taskId string) er
 				hsetArgs = append(hsetArgs, k, v)
 			}
 
-			pipe.HSet(ctx, taskId, hsetArgs...)
+			pipe.HSet(ctx, r.taskHashKey(taskId), hsetArgs...)
 			if extraOp != nil {
 				extraOp(pipe)
 			}

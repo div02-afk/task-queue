@@ -14,6 +14,7 @@ type BrokerConfig struct {
 	FinishedQueue   string
 	TimeoutSet      string
 	ScheduledSet    string
+	HashKeyPrefix   string
 }
 
 type WorkerPoolConfig struct {
@@ -29,12 +30,13 @@ type ReaperConfig struct {
 
 func GetDefaultBrokerConfig() *BrokerConfig {
 	return &BrokerConfig{
-		PendingQueue:    "task-queue:pending",
-		ProcessingQueue: "task-queue:processing",
-		FinishedQueue:   "task-queue:finished",
-		DLQ:             "task-queue:dlq",
-		TimeoutSet:      "task-set:timeout",
-		ScheduledSet:    "task-set:scheduled",
+		PendingQueue:    "task_queue:pending",
+		ProcessingQueue: "task_queue:processing",
+		FinishedQueue:   "task_queue:finished",
+		DLQ:             "task_queue:dlq",
+		TimeoutSet:      "task_set:timeout",
+		ScheduledSet:    "task_set:scheduled",
+		HashKeyPrefix:   "task_metadata",
 	}
 }
 

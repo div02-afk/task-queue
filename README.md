@@ -70,14 +70,14 @@ Task handlers are regular Go functions today. WASM-based task execution is plann
 
 ## Redis Data Model
 
-Each task is stored as a Redis hash keyed by task ID. Redis also tracks task IDs in:
+Each task is stored as a Redis hash keyed as `task_metadata:<taskId>`. Redis also tracks task IDs in:
 
-- `task-queue:pending`
-- `task-queue:processing`
-- `task-queue:finished`
-- `task-queue:dlq`
-- `task-set:scheduled`
-- `task-set:timeout`
+- `task_queue:pending`
+- `task_queue:processing`
+- `task_queue:finished`
+- `task_queue:dlq`
+- `task_set:scheduled`
+- `task_set:timeout`
 
 Current task kinds:
 
