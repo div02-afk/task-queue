@@ -3,7 +3,9 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/div02-afk/task-queue/pkg/broker"
@@ -11,6 +13,7 @@ import (
 	"github.com/div02-afk/task-queue/pkg/registry"
 	"github.com/div02-afk/task-queue/pkg/task"
 	"github.com/google/uuid"
+	"github.com/tetratelabs/wazero"
 )
 
 type Worker struct {
@@ -118,14 +121,63 @@ func (w *Worker) start(ctx context.Context) {
 }
 
 func (w *Worker) Process(parentCtx context.Context, task *task.Task) error {
-	taskFunc, ok := w.registry.Get(task.TaskName)
-
-	if !ok {
+	taskFuncWasm, err := w.registry.Get(task.TaskName)
+	if err != nil {
 		err := errors.New("Task Function not found: " + task.TaskName)
 		return err
 	}
+	config := wazero.NewModuleConfig().
+		WithName("").
+		WithStdout(os.Stdout).
+		WithStderr(os.Stderr).
+		WithStdin(os.Stdin).
+		WithStartFunctions("_initialize")
+	mod, instantiateError := w.registry.Runtime.InstantiateModule(parentCtx, *taskFuncWasm, config)
+	if instantiateError != nil {
+		return instantiateError
+	}
+	defer mod.Close(parentCtx)
+	alloc := mod.ExportedFunction("alloc")
+	execute := mod.ExportedFunction("execute")
+	mem := mod.Memory()
+
+	if execute == nil {
+		err := errors.New("execute function not found in wasm module")
+		return err
+	} else if alloc == nil {
+		err := errors.New("alloc function not found in wasm module")
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(parentCtx, task.Timeout)
-	err := taskFunc(ctx, task.Payload)
-	cancel()
-	return err
+	// 1. ask wasm to allocate memory for our payload
+	res, err := alloc.Call(ctx, uint64(len(task.Payload)))
+	defer cancel()
+	if err != nil {
+		log.Println("Alloc call failed with error: ", err)
+		return err
+	}
+	ptr := uint32(res[0])
+	// 2. write payload into wasm memory at that ptr
+	if ptr != 0 {
+		mem.Write(ptr, task.Payload)
+	}
+
+	// 3. call execute — wasm reads payload itself via ptr+len
+	res, err = execute.Call(ctx, uint64(ptr), uint64(len(task.Payload)))
+	if err != nil {
+		return err
+	}
+
+	// 4. unpack result ptr+len from returned uint64
+	resultPtr := uint32(res[0] >> 32)
+	resultLen := uint32(res[0])
+
+	//TODO: figure out how to store results
+	_, ok := mem.Read(resultPtr, resultLen)
+	if !ok {
+		return fmt.Errorf("failed to read result")
+	}
+
+	return nil
 }

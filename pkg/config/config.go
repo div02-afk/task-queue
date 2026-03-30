@@ -1,6 +1,8 @@
 package config
 
-import "time"
+import (
+	"time"
+)
 
 type TaskConfig struct {
 	MaxRetries int
@@ -42,7 +44,7 @@ func GetDefaultBrokerConfig() *BrokerConfig {
 
 func GetDefaultWorkerPoolConfig() *WorkerPoolConfig {
 	return &WorkerPoolConfig{
-		Concurrency: 20,
+		Concurrency: 1,
 		PollTimeout: 5 * time.Second,
 		TaskTimeout: 5 * time.Second,
 		RetryDelay:  500 * time.Millisecond,
@@ -61,3 +63,4 @@ func GetDefaultReaperConfig() *ReaperConfig {
 		PollInterval: 30 * time.Second,
 	}
 }
+

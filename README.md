@@ -27,7 +27,7 @@ The current runtime is organized like this:
 6. The scheduler polls scheduled tasks and requeues due one-off and cron tasks into the pending queue.
 7. `cmd/reaper` polls for expired task timeouts. Recovery and cleanup are still incomplete.
 
-Task handlers are regular Go functions today. WASM-based task execution is planned, but it is not part of the current runtime yet.
+Task handlers are now compiled to WebAssembly and executed by workers through Wazero.
 
 ## Components
 
@@ -57,7 +57,10 @@ Task handlers are regular Go functions today. WASM-based task execution is plann
   Worker pool, task processing loop, retry handling, and handler dispatch.
 
 - `pkg/registry`
-  In-memory mapping from task names to Go handler functions.
+  Registers task source code, compiles it to WASM, stores compiled modules in-memory, and lazy-loads persisted `.wasm` files.
+
+- `pkg/wasmCompiler`
+  Language-aware compiler adapters used by the registry to build task functions into WASM artifacts (currently TinyGo for Go source).
 
 - `pkg/scheduler`
   Polls the scheduled set and promotes due tasks into the pending queue.
@@ -92,13 +95,44 @@ Current task stages:
 - `completed`
 - `failed`
 
+## WASM Task Execution
+
+The worker now executes task logic from WASM modules instead of calling in-process Go handler functions.
+
+Current task function contract:
+
+- export `alloc(size uint32) uint32`
+- export `execute(ptr uint32, length uint32) uint64`
+- export start function `_initialize`
+
+Execution flow:
+
+1. Worker fetches task payload from Redis.
+2. Worker looks up task module in the registry.
+3. If needed, registry loads `<taskName>.wasm` from the wasm directory and compiles it with Wazero.
+4. Worker instantiates the module with WASI enabled.
+5. Worker calls `alloc`, writes payload bytes into module memory, then calls `execute`.
+6. Worker reads `(resultPtr,resultLen)` packed in the returned `uint64`.
+
+Registration flow:
+
+1. Worker process registers tasks via `registry.Register` with source code text and language.
+2. Registry writes temporary source to disk.
+3. Registry compiles source to WASM (TinyGo for language `go`).
+4. Registry stores the resulting module in memory and on disk for reuse.
+
+Notes:
+
+- The sample task registration lives in `cmd/worker` and registers `task_1` from an inline Go source string.
+- Current code stores task wasm files in `/wasm_task_functions`.
+
 ## How It Runs Today
 
 - Producer:
   Creates a task with default metadata such as retry count and timeout, then either pushes it to the pending queue or stores it in the scheduled set.
 
 - Worker pool:
-  Uses a Redis blocking move from pending to processing, executes the registered handler, and then acknowledges success or requeues/fails the task on error.
+  Uses a Redis blocking move from pending to processing, executes task logic via a WASM module (`alloc` + `execute`), and then acknowledges success or requeues/fails the task on error.
 
 - Scheduler:
   Polls the scheduled set, promotes due tasks, and for cron tasks computes the next run before re-adding them to the scheduled set.
@@ -110,6 +144,8 @@ Current task stages:
 
 - Go `1.25.6`
 - Redis `7.x`
+- TinyGo (required to compile Go task source into WASM during task registration)
+- Binaryen (required by TinyGo toolchain for WASM optimization and linking)
 - Docker and Docker Compose if you want a local Redis container
 
 ## Run Locally
@@ -137,7 +173,7 @@ go run ./cmd/worker
 Notes:
 
 - This process also starts the scheduler loop.
-- The sample worker currently registers only `task_1`.
+- The sample worker currently registers only `task_1` as an inline Go source string that is compiled to WASM at startup.
 
 ### 4. Start the reaper
 
@@ -152,19 +188,19 @@ go run ./cmd/reaper
 Immediate task:
 
 ```sh
-go run ./cmd/producer -task task_1 -payload "{\"message\":\"hello\"}" -kind 0
+go run ./cmd/producer -task task_1 -payload "{\"name\":\"world\"}" -kind 0
 ```
 
 Scheduled task:
 
 ```sh
-go run ./cmd/producer -task task_1 -payload "{\"message\":\"later\"}" -kind 1 -scheduled_at 2026-03-29T12:00:00+05:30
+go run ./cmd/producer -task task_1 -payload "{\"name\":\"later\"}" -kind 1 -scheduled_at 2026-03-29T12:00:00+05:30
 ```
 
 Cron task:
 
 ```sh
-go run ./cmd/producer -task task_1 -payload "{\"message\":\"repeat\"}" -kind 2 -cron "*/10 * * * * *"
+go run ./cmd/producer -task task_1 -payload "{\"name\":\"repeat\"}" -kind 2 -cron "*/10 * * * * *"
 ```
 
 Notes:
@@ -181,12 +217,13 @@ Implemented now:
 - finished queue on `Ack`
 - scheduled and cron task promotion
 - timeout tracking via a Redis sorted set
+- WASM task registration and execution via TinyGo + Wazero
 
 Coming soon:
 
 - timed-out task recovery and DLQ cleanup in the reaper
 - stronger validation and broker-side atomicity improvements
-- WASM-based task execution
+- task result persistence and richer wasm task tooling
 
 ## License
 

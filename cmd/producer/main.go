@@ -23,7 +23,7 @@ func main() {
 	ctx := context.Background()
 
 	taskName := flag.String("task", "", "task name")
-	payload := json.RawMessage(*flag.String("payload", "", "Payload to be sent with task"))
+	payloadString := flag.String("payload", "", "Payload to be sent with task")
 	taskKindInt := flag.Int("kind", 0, "Kind of task ie: 0:immediate, 1:scheduled, 2:cron")
 	scheduledAtStr := flag.String("scheduled_at", time.Now().Format(time.RFC3339), "Task scheduled at (kind:scheduled)")
 	cronExpr := flag.String("cron", "", "Cron Expression (used with kind:cron(2))")
@@ -32,6 +32,7 @@ func main() {
 
 	scheduledAt, err := time.Parse(time.RFC3339, *scheduledAtStr)
 	taskKind := task.TaskKind(*taskKindInt)
+	payload := json.RawMessage(*payloadString)
 	if *taskName == "" {
 		panic("Invalid Task Name")
 	} else if *taskKindInt < 0 || *taskKindInt > 2 {
