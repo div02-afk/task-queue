@@ -105,6 +105,12 @@ Current task function contract:
 - export `execute(ptr uint32, length uint32) uint64`
 - export start function `_initialize`
 
+Current logging behavior:
+
+- command, broker, scheduler, reaper, registry, compiler, and worker events emit structured logs
+- wasm `stdout` and `stderr` are captured per task execution in the worker
+- wasm logs can be mirrored to the terminal and optionally persisted to disk
+
 Execution flow:
 
 1. Worker fetches task payload from Redis.
@@ -162,18 +168,30 @@ Create `.env` from `.env.example`:
 
 ```env
 REDIS_URL=localhost:6379
+TASK_QUEUE_LOG_LEVEL=info
+TASK_QUEUE_LOG_FORMAT=pretty
+TASK_QUEUE_SAVE_WASM_LOGS=false
+TASK_QUEUE_MIRROR_WASM_LOGS=true
+TASK_QUEUE_WASM_LOG_DIR=runtime-logs/wasm
 ```
+
+Notes:
+
+- `TASK_QUEUE_LOG_FORMAT=pretty` is the readable default for local development.
+- Set `TASK_QUEUE_LOG_FORMAT=json` if you want logs that are easier to ship to a collector.
+- Set `TASK_QUEUE_SAVE_WASM_LOGS=true` to save wasm task logs on disk.
+- Saved wasm logs are written under `TASK_QUEUE_WASM_LOG_DIR/<task-name>/<task-id>.log`.
 
 ### 3. Start the worker
 
 ```sh
-go run ./cmd/worker
+go run ./cmd/worker -registry ./registry
 ```
 
 Notes:
 
 - This process also starts the scheduler loop.
-- The sample worker currently registers only `task_1` as an inline Go source string that is compiled to WASM at startup.
+- The worker expects a registry directory path and compiles supported task source files there into WASM at startup.
 
 ### 4. Start the reaper
 
@@ -207,6 +225,7 @@ Notes:
 
 - Scheduled tasks require an RFC3339 timestamp in the future.
 - Cron tasks use the `robfig/cron` parser with seconds enabled, so the expression is six-field.
+- When wasm log persistence is enabled, each task completion log includes the saved wasm log path.
 
 ## Current Status
 

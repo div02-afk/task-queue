@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"strings"
 	"time"
 )
 
@@ -28,6 +30,14 @@ type WorkerPoolConfig struct {
 
 type ReaperConfig struct {
 	PollInterval time.Duration
+}
+
+type LoggingConfig struct {
+	Level           string
+	Format          string
+	PersistWasmLogs bool
+	MirrorWasmLogs  bool
+	WasmLogDir      string
 }
 
 func GetDefaultBrokerConfig() *BrokerConfig {
@@ -64,3 +74,38 @@ func GetDefaultReaperConfig() *ReaperConfig {
 	}
 }
 
+func GetDefaultLoggingConfig() *LoggingConfig {
+	return &LoggingConfig{
+		Level:           getEnv("TASK_QUEUE_LOG_LEVEL", "info"),
+		Format:          getEnv("TASK_QUEUE_LOG_FORMAT", "pretty"),
+		PersistWasmLogs: getEnvBool("TASK_QUEUE_SAVE_WASM_LOGS", false),
+		MirrorWasmLogs:  getEnvBool("TASK_QUEUE_MIRROR_WASM_LOGS", true),
+		WasmLogDir:      getEnv("TASK_QUEUE_WASM_LOG_DIR", "runtime-logs/wasm"),
+	}
+}
+
+func getEnv(key string, fallback string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return fallback
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	value, ok := os.LookupEnv(key)
+	if !ok {
+		return fallback
+	}
+
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
+}

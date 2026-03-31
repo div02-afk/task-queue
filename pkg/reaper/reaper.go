@@ -2,11 +2,11 @@ package reaper
 
 import (
 	"context"
-	"log"
 	"time"
 
 	"github.com/div02-afk/task-queue/pkg/broker"
 	"github.com/div02-afk/task-queue/pkg/config"
+	"github.com/div02-afk/task-queue/pkg/logging"
 )
 
 type Reaper struct {
@@ -22,22 +22,26 @@ func NewReaper(broker broker.Broker, config *config.ReaperConfig) *Reaper {
 }
 
 func (r *Reaper) Reap(ctx context.Context) error {
+	logger := logging.Component("reaper").With("poll_interval", r.Config.PollInterval)
 	for {
 		select {
 		case <-ctx.Done():
+			logger.Info("reaper stopped")
 			return nil
 		default:
 		}
 		tasks, err := r.broker.GetTimedOutTaskIds(ctx)
 		if err != nil {
-			log.Panicln("Timed-out task fetch failed: ", err)
+			logger.Error("timed-out task fetch failed", "error", err)
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 
 		//TODO: move tasks to DLQ
 
-		log.Println("Timed-out tasks: ", tasks)
-		time.Sleep(1 * time.Second)
+		if len(tasks) > 0 {
+			logger.Warn("timed-out tasks found", "task_ids", tasks, "count", len(tasks))
+		}
+		time.Sleep(r.Config.PollInterval)
 	}
 }

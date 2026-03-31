@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"flag"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/div02-afk/task-queue/pkg/broker"
 	"github.com/div02-afk/task-queue/pkg/config"
+	"github.com/div02-afk/task-queue/pkg/logging"
 	"github.com/div02-afk/task-queue/pkg/registry"
 	"github.com/div02-afk/task-queue/pkg/scheduler"
 	"github.com/div02-afk/task-queue/pkg/worker"
@@ -19,18 +19,20 @@ import (
 )
 
 func main() {
-	print("Starting")
-	godotenv.Load()
+	_ = godotenv.Load()
+	logging.Setup(config.GetDefaultLoggingConfig())
+
 	ctx := context.Background()
-	println("Env loaded")
+	logger := logging.Component("worker_cmd")
 	registryPath := flag.String("registry", "", "Registry Path")
 
 	flag.Parse()
 
 	if *registryPath == "" {
-		log.Panicln("Registry not found")
+		logger.Error("registry path flag is required")
+		os.Exit(1)
 	}
-	
+
 	brokerConfig := config.GetDefaultBrokerConfig()
 	workerPoolConfig := config.GetDefaultWorkerPoolConfig()
 
@@ -39,7 +41,6 @@ func main() {
 			Addr: os.Getenv("REDIS_URL"),
 		},
 	)
-	println("Redis Client Created")
 
 	broker := broker.RedisBroker{
 		RedisClient: *redisClient,
@@ -50,9 +51,9 @@ func main() {
 
 	err := NewRegistry.RegisterDirectory(*registryPath)
 	if err != nil {
-		log.Panicln("Task Registration failed with error: ", err)
+		logger.Error("task registration failed", "error", err, "registry_path", *registryPath)
+		os.Exit(1)
 	}
-	println("Registry Created and Task Registered")
 
 	workerPool := worker.CreateWorkerPool(
 		workerPoolConfig,
@@ -65,16 +66,24 @@ func main() {
 		PollInterval: 1 * time.Second,
 	}
 
-	log.Println("Worker Pool and Scheduler Created")
+	logger.Info(
+		"starting worker runtime",
+		"registry_path", *registryPath,
+		"redis_addr", os.Getenv("REDIS_URL"),
+		"worker_concurrency", workerPoolConfig.Concurrency,
+		"scheduler_poll_interval", time.Second,
+	)
+
 	cancelScheduler := scheduler.Start(ctx)
 	cancelWorkers := workerPool.StartWorkers(ctx)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
+	sig := <-sigCh
+	logger.Info("shutdown signal received", "signal", sig.String())
 
 	cancelScheduler()
 	cancelWorkers()
 	time.Sleep(300 * time.Millisecond)
-
+	logger.Info("worker runtime stopped")
 }

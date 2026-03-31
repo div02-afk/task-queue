@@ -1,7 +1,7 @@
 package wasmcompiler
 
 import (
-	"log"
+	"fmt"
 )
 
 type WasmCompiler interface {
@@ -13,7 +13,6 @@ func GetWasmCompiler(language string) (WasmCompiler, error) {
 	case ".go":
 		return &GoWasmCompiler{}, nil
 	default:
-		log.Println("Wasm compiler not found for language: ", language)
-		return nil, nil
+		return nil, fmt.Errorf("wasm compiler not found for language %s", language)
 	}
 }

@@ -2,12 +2,12 @@ package registry
 
 import (
 	"context"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
+	"github.com/div02-afk/task-queue/pkg/logging"
 	wasmcompiler "github.com/div02-afk/task-queue/pkg/wasmCompiler"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
@@ -50,6 +50,8 @@ func ensureDir(path string) error {
 }
 
 func (r *Registry) saveTaskAsWasm(taskFunc TaskFunc, taskName string) (*os.File, error) {
+	logger := logging.Component("registry").With("task_name", taskName, "language", taskFunc.Language)
+
 	f, err := os.CreateTemp("", "task-*.go")
 	if err != nil {
 		return nil, err
@@ -59,35 +61,40 @@ func (r *Registry) saveTaskAsWasm(taskFunc TaskFunc, taskName string) (*os.File,
 
 	_, err = f.Write(taskFunc.TaskFunction)
 	if err != nil {
-		log.Println("Error writing to temp file: ", err)
+		logger.Error("write temp source file failed", "error", err)
 		return nil, err
 	}
-	log.Println("Wrote the code to a temp file")
+	logger.Info("wrote task source to temp file", "source_path", f.Name())
 
-	ensureDir(r.wasmDir)
+	if err := ensureDir(r.wasmDir); err != nil {
+		logger.Error("ensure wasm directory failed", "error", err, "wasm_dir", r.wasmDir)
+		return nil, err
+	}
 	wasmFile, err := os.Create(r.wasmDir + "/" + taskName + ".wasm")
 	if err != nil {
-		log.Println("Wasm file creation failed with error: ", err)
+		logger.Error("wasm file creation failed", "error", err)
 		return nil, err
 	}
-	log.Println("Created temp wasm file with name: ", wasmFile.Name())
-	log.Println("Getting compiler for lang: ", taskFunc.Language)
+	logger.Info("created wasm output file", "wasm_path", wasmFile.Name())
+
 	com, err := wasmcompiler.GetWasmCompiler(taskFunc.Language)
 	if err != nil {
+		logger.Error("get wasm compiler failed", "error", err)
 		return nil, err
 	}
-	log.Println("Compiler initialized")
-	compilationErr := com.Compile(f.Name(), wasmFile.Name())
+	logger.Info("compiler initialized")
 
+	compilationErr := com.Compile(f.Name(), wasmFile.Name())
 	if compilationErr != nil {
-		log.Println("Compilation failed with error: ", compilationErr)
+		logger.Error("wasm compilation failed", "error", compilationErr)
 		return nil, compilationErr
 	}
-	log.Println("Compilation successful")
+	logger.Info("wasm compilation successful")
 	return wasmFile, nil
 }
 
 func (r *Registry) RegisterDirectory(directoryName string) error {
+	logger := logging.Component("registry").With("directory", directoryName)
 	dir, err := os.ReadDir(directoryName)
 	if err != nil {
 		return err
@@ -95,12 +102,12 @@ func (r *Registry) RegisterDirectory(directoryName string) error {
 
 	for i := range dir {
 		if dir[i].IsDir() {
-			log.Println("Skipping dir: ", dir[i].Name())
+			logger.Debug("skipping subdirectory", "name", dir[i].Name())
 			continue
 		}
 		fileData, err := os.ReadFile(filepath.Join(directoryName, dir[i].Name()))
 		if err != nil {
-			log.Println("Error reading file: ", dir[i].Name(), "with error: ", err)
+			logger.Error("read task source failed", "name", dir[i].Name(), "error", err)
 			continue
 		}
 		fileName := filepath.Base(dir[i].Name())
@@ -110,25 +117,29 @@ func (r *Registry) RegisterDirectory(directoryName string) error {
 			TaskFunction: fileData,
 			Language:     ext,
 		}
-		r.Register(name, taskFunction)
+		if err := r.Register(name, taskFunction); err != nil {
+			logger.Error("register task failed", "task_name", name, "error", err)
+			continue
+		}
 	}
 
 	keys := make([]string, 0, len(r.tasks))
 	for k := range r.tasks {
 		keys = append(keys, k)
 	}
-	log.Println("registered tasks:", keys)
+	logger.Info("registered tasks", "task_names", keys)
 
 	return nil
 }
 
 func (r *Registry) Register(taskName string, taskFunc TaskFunc) error {
+	logger := logging.Component("registry").With("task_name", taskName)
 	wasmFile, err := r.saveTaskAsWasm(taskFunc, taskName)
 	if err != nil {
 		return err
 	}
 	defer wasmFile.Close()
-	log.Println("Wasm file created")
+	logger.Info("wasm artifact ready", "wasm_path", wasmFile.Name())
 	data, err := os.ReadFile(wasmFile.Name())
 	if err != nil {
 		return err
@@ -141,13 +152,14 @@ func (r *Registry) Register(taskName string, taskFunc TaskFunc) error {
 	r.mu.Lock()
 	r.tasks[taskName] = compiled
 	r.mu.Unlock()
+	logger.Info("task compiled module cached in memory")
 	return nil
 }
 
 func (r *Registry) Get(name string) (*wazero.CompiledModule, error) {
 	fn, ok := r.tasks[name]
 	if !ok {
-		// This is done to load wasm files to memory if the registry has restarted
+		logger := logging.Component("registry").With("task_name", name)
 
 		wasmData, err := r.loadWasm(name)
 		if err != nil {
@@ -162,6 +174,7 @@ func (r *Registry) Get(name string) (*wazero.CompiledModule, error) {
 		r.mu.Lock()
 		r.tasks[name] = taskModule
 		r.mu.Unlock()
+		logger.Info("loaded wasm module from disk into cache")
 		return &taskModule, nil
 	}
 	return &fn, nil

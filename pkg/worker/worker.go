@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"time"
 
 	"github.com/div02-afk/task-queue/pkg/broker"
 	"github.com/div02-afk/task-queue/pkg/config"
+	"github.com/div02-afk/task-queue/pkg/logging"
 	"github.com/div02-afk/task-queue/pkg/registry"
 	"github.com/div02-afk/task-queue/pkg/task"
 	"github.com/google/uuid"
@@ -26,6 +26,11 @@ type Worker struct {
 
 type WorkerPool struct {
 	workers []Worker
+}
+
+type TaskExecutionResult struct {
+	ResultSize  int
+	WasmLogPath string
 }
 
 func CreateWorkerPool(config *config.WorkerPoolConfig, registry *registry.Registry, broker broker.Broker) WorkerPool {
@@ -51,6 +56,7 @@ func createWorker(registry *registry.Registry, broker broker.Broker, taskTimeout
 
 func (wp *WorkerPool) StartWorkers(bgctx context.Context) context.CancelFunc {
 	ctx, cancel := context.WithCancel(bgctx)
+	logging.Component("worker_pool").Info("starting worker pool", "worker_count", len(wp.workers))
 	for i := 0; i < len(wp.workers); i++ {
 		go wp.workers[i].superwiseWorker(ctx)
 	}
@@ -59,20 +65,21 @@ func (wp *WorkerPool) StartWorkers(bgctx context.Context) context.CancelFunc {
 }
 
 func (w *Worker) superwiseWorker(ctx context.Context) {
+	logger := logging.Component("worker").With("worker_id", w.ID)
 	for {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Println("Worker ", w.ID, " failed, restarting", r)
+					logger.Error("worker panicked; restarting", "panic", fmt.Sprint(r))
 				}
 			}()
 
-			//This blocks until a worker fails
 			w.start(ctx)
 		}()
 
 		select {
 		case <-ctx.Done():
+			logger.Info("worker stopped")
 			return
 		default:
 		}
@@ -81,60 +88,95 @@ func (w *Worker) superwiseWorker(ctx context.Context) {
 }
 
 func (w *Worker) start(ctx context.Context) {
+	logger := logging.Component("worker").With("worker_id", w.ID)
 	for {
 		select {
 		case <-ctx.Done():
+			logger.Info("worker loop canceled")
 			return
 		default:
 		}
-		log.Println("Worker: ", w.ID, " fetching task from broker")
-		task, err := w.broker.Dequeue(ctx)
+		logger.Debug("fetching task from broker")
+		currentTask, err := w.broker.Dequeue(ctx)
 		if err != nil {
-			log.Println("Dequeue failed with error: ", err)
+			logger.Error("dequeue failed", "error", err)
 			time.Sleep(w.RetryDelay)
 			continue
 		}
 
-		err = w.Process(ctx, task)
+		taskLogger := logger.With(
+			"task_id", currentTask.ID,
+			"task_name", currentTask.TaskName,
+			"attempt", currentTask.Attempts+1,
+			"max_retries", currentTask.MaxRetries,
+			"task_kind", currentTask.Kind,
+		)
+
+		startedAt := time.Now()
+		taskLogger.Info("processing task")
+		result, err := w.Process(ctx, currentTask)
 		if err != nil {
-			log.Println("Task: ", task.ID, " failed with error: ", err, " retrying...")
-			w.broker.Nack(ctx, task.ID)
+			taskLogger.Error("task execution failed", "error", err, "duration", time.Since(startedAt))
+			if nackErr := w.broker.Nack(ctx, currentTask.ID); nackErr != nil {
+				taskLogger.Error("nack failed", "error", nackErr)
+			}
 			time.Sleep(w.RetryDelay)
 			continue
 		}
-		err = w.broker.Ack(ctx, task.ID)
+
+		err = w.broker.Ack(ctx, currentTask.ID)
 		retryAck := 0
 		for retryAck < 3 && err != nil {
-			log.Println("Ack failed for task: ", task.ID, " retrying... ", retryAck)
-			err = w.broker.Ack(ctx, task.ID)
+			taskLogger.Warn("ack failed; retrying", "retry", retryAck+1, "error", err)
+			err = w.broker.Ack(ctx, currentTask.ID)
 			retryAck++
 		}
 		if err != nil {
-			log.Println("Ack failed for task: ", task.ID, " after 3 retries, moving to next task")
+			taskLogger.Error("ack failed after retries", "error", err)
 		} else {
-			log.Println("Task: ", task.ID, " completed successfully")
+			taskLogger.Info(
+				"task completed",
+				"duration", time.Since(startedAt),
+				"result_size_bytes", result.ResultSize,
+				"wasm_log_path", result.WasmLogPath,
+			)
 		}
 
-		// Sleep for a short duration before fetching the next task to prevent tight loop in case of continuous failures
 		time.Sleep(100 * time.Millisecond)
 	}
 }
 
-func (w *Worker) Process(parentCtx context.Context, task *task.Task) error {
-	taskFuncWasm, err := w.registry.Get(task.TaskName)
+func (w *Worker) Process(parentCtx context.Context, currentTask *task.Task) (*TaskExecutionResult, error) {
+	logger := logging.Component("worker_process").With(
+		"worker_id", w.ID,
+		"task_id", currentTask.ID,
+		"task_name", currentTask.TaskName,
+	)
+
+	taskFuncWasm, err := w.registry.Get(currentTask.TaskName)
 	if err != nil {
-		err := errors.New("Task Function not found: " + task.TaskName)
-		return err
+		return nil, errors.New("task function not found: " + currentTask.TaskName)
 	}
+
+	wasmLogSink, err := logging.NewWasmTaskLogSink(logger, currentTask.TaskName, currentTask.ID)
+	if err != nil {
+		return nil, fmt.Errorf("create wasm log sink: %w", err)
+	}
+	defer func() {
+		if closeErr := wasmLogSink.Close(); closeErr != nil {
+			logger.Error("closing wasm log sink failed", "error", closeErr)
+		}
+	}()
+
 	config := wazero.NewModuleConfig().
-		WithName("").
-		WithStdout(os.Stdout).
-		WithStderr(os.Stderr).
+		WithName(currentTask.TaskName).
+		WithStdout(wasmLogSink.Stdout()).
+		WithStderr(wasmLogSink.Stderr()).
 		WithStdin(os.Stdin).
 		WithStartFunctions("_initialize")
 	mod, instantiateError := w.registry.Runtime.InstantiateModule(parentCtx, *taskFuncWasm, config)
 	if instantiateError != nil {
-		return instantiateError
+		return nil, instantiateError
 	}
 	defer mod.Close(parentCtx)
 	alloc := mod.ExportedFunction("alloc")
@@ -142,42 +184,41 @@ func (w *Worker) Process(parentCtx context.Context, task *task.Task) error {
 	mem := mod.Memory()
 
 	if execute == nil {
-		err := errors.New("execute function not found in wasm module")
-		return err
+		return nil, errors.New("execute function not found in wasm module")
 	} else if alloc == nil {
-		err := errors.New("alloc function not found in wasm module")
-		return err
+		return nil, errors.New("alloc function not found in wasm module")
 	}
 
-	ctx, cancel := context.WithTimeout(parentCtx, task.Timeout)
-	// 1. ask wasm to allocate memory for our payload
-	res, err := alloc.Call(ctx, uint64(len(task.Payload)))
+	ctx, cancel := context.WithTimeout(parentCtx, currentTask.Timeout)
 	defer cancel()
+	res, err := alloc.Call(ctx, uint64(len(currentTask.Payload)))
 	if err != nil {
-		log.Println("Alloc call failed with error: ", err)
-		return err
+		return nil, fmt.Errorf("alloc call failed: %w", err)
 	}
 	ptr := uint32(res[0])
-	// 2. write payload into wasm memory at that ptr
+	if ptr == 0 && len(currentTask.Payload) > 0 {
+		return nil, errors.New("wasm alloc returned zero pointer for non-empty payload")
+	}
 	if ptr != 0 {
-		mem.Write(ptr, task.Payload)
+		if ok := mem.Write(ptr, currentTask.Payload); !ok {
+			return nil, errors.New("failed to write payload to wasm memory")
+		}
 	}
 
-	// 3. call execute — wasm reads payload itself via ptr+len
-	res, err = execute.Call(ctx, uint64(ptr), uint64(len(task.Payload)))
+	res, err = execute.Call(ctx, uint64(ptr), uint64(len(currentTask.Payload)))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	// 4. unpack result ptr+len from returned uint64
 	resultPtr := uint32(res[0] >> 32)
 	resultLen := uint32(res[0])
-
-	//TODO: figure out how to store results
-	_, ok := mem.Read(resultPtr, resultLen)
+	resultBytes, ok := mem.Read(resultPtr, resultLen)
 	if !ok {
-		return fmt.Errorf("failed to read result")
+		return nil, fmt.Errorf("failed to read result")
 	}
 
-	return nil
+	return &TaskExecutionResult{
+		ResultSize:  len(resultBytes),
+		WasmLogPath: wasmLogSink.LogPath(),
+	}, nil
 }

@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
-	"log"
 	"os"
 	"time"
 
 	"github.com/div02-afk/task-queue/pkg/broker"
 	"github.com/div02-afk/task-queue/pkg/config"
 	"github.com/div02-afk/task-queue/pkg/cron_helper"
+	"github.com/div02-afk/task-queue/pkg/logging"
 	"github.com/div02-afk/task-queue/pkg/producer"
 	"github.com/div02-afk/task-queue/pkg/task"
 	"github.com/joho/godotenv"
@@ -19,8 +19,11 @@ import (
 )
 
 func main() {
-	godotenv.Load()
+	_ = godotenv.Load()
+	logging.Setup(config.GetDefaultLoggingConfig())
+
 	ctx := context.Background()
+	logger := logging.Component("producer_cmd")
 
 	taskName := flag.String("task", "", "task name")
 	payloadString := flag.String("payload", "", "Payload to be sent with task")
@@ -34,16 +37,20 @@ func main() {
 	taskKind := task.TaskKind(*taskKindInt)
 	payload := json.RawMessage(*payloadString)
 	if *taskName == "" {
-		panic("Invalid Task Name")
+		logger.Error("invalid task name")
+		os.Exit(1)
 	} else if *taskKindInt < 0 || *taskKindInt > 2 {
-		panic("Invalid Task Kind")
+		logger.Error("invalid task kind", "task_kind", *taskKindInt)
+		os.Exit(1)
 	} else if taskKind == task.KindScheduled && (err != nil || scheduledAt.Compare(time.Now()) == -1) {
-		panic("Invalid ScheduledAt time")
+		logger.Error("invalid scheduled time", "scheduled_at", *scheduledAtStr, "error", err)
+		os.Exit(1)
 	} else if taskKind == task.KindCron {
 		parser := cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 		_, err := parser.Parse(*cronExpr)
 		if err != nil {
-			panic("Invalid Cron Expression")
+			logger.Error("invalid cron expression", "cron", *cronExpr, "error", err)
+			os.Exit(1)
 		}
 	}
 
@@ -79,15 +86,23 @@ func main() {
 	if taskKind == task.KindImmediate {
 		taskId, err := producer.AddTask(ctx, taskRequest)
 		if err != nil {
-			log.Panic("Task enqueue failed: ", err)
+			logger.Error("task enqueue failed", "task_name", *taskName, "error", err)
+			os.Exit(1)
 		}
-		log.Printf("Task: %v added to queue", taskId)
+		logger.Info("task added to queue", "task_id", taskId, "task_name", *taskName, "task_kind", taskKind)
 	} else {
 		taskId, err := producer.ScheduleTask(ctx, taskRequest)
 		if err != nil {
-			log.Panic("Task scheduling failed: ", err)
+			logger.Error("task scheduling failed", "task_name", *taskName, "error", err)
+			os.Exit(1)
 		}
-		log.Printf("Task: %v added to queue", taskId)
+		logger.Info(
+			"task added to queue",
+			"task_id", taskId,
+			"task_name", *taskName,
+			"task_kind", taskKind,
+			"next_run_at", taskRequest.NextRunAt.Format(time.RFC3339),
+		)
 	}
 
 }

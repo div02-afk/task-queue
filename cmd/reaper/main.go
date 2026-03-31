@@ -6,14 +6,18 @@ import (
 
 	"github.com/div02-afk/task-queue/pkg/broker"
 	"github.com/div02-afk/task-queue/pkg/config"
+	"github.com/div02-afk/task-queue/pkg/logging"
 	"github.com/div02-afk/task-queue/pkg/reaper"
 	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
 )
 
 func main() {
-	godotenv.Load()
+	_ = godotenv.Load()
+	logging.Setup(config.GetDefaultLoggingConfig())
+
 	ctx := context.Background()
+	logger := logging.Component("reaper_cmd")
 	broker := broker.RedisBroker{
 		RedisClient: *redis.NewClient(
 			&redis.Options{
@@ -25,5 +29,9 @@ func main() {
 
 	reaper := reaper.NewReaper(&broker, config.GetDefaultReaperConfig())
 
-	reaper.Reap(ctx)
+	logger.Info("starting reaper", "redis_addr", os.Getenv("REDIS_URL"))
+	if err := reaper.Reap(ctx); err != nil {
+		logger.Error("reaper exited with error", "error", err)
+		os.Exit(1)
+	}
 }
