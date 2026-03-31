@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	wasmcompiler "github.com/div02-afk/task-queue/pkg/wasmCompiler"
@@ -13,8 +14,8 @@ import (
 )
 
 type TaskFunc struct {
-	TaskFunctionText string
-	Language         string
+	TaskFunction []byte
+	Language     string
 }
 
 type Registry struct {
@@ -56,7 +57,11 @@ func (r *Registry) saveTaskAsWasm(taskFunc TaskFunc, taskName string) (*os.File,
 	defer os.Remove(f.Name()) // clean up after
 	defer f.Close()
 
-	f.WriteString(taskFunc.TaskFunctionText)
+	_, err = f.Write(taskFunc.TaskFunction)
+	if err != nil {
+		log.Println("Error writing to temp file: ", err)
+		return nil, err
+	}
 	log.Println("Wrote the code to a temp file")
 
 	ensureDir(r.wasmDir)
@@ -80,6 +85,41 @@ func (r *Registry) saveTaskAsWasm(taskFunc TaskFunc, taskName string) (*os.File,
 	}
 	log.Println("Compilation successful")
 	return wasmFile, nil
+}
+
+func (r *Registry) RegisterDirectory(directoryName string) error {
+	dir, err := os.ReadDir(directoryName)
+	if err != nil {
+		return err
+	}
+
+	for i := range dir {
+		if dir[i].IsDir() {
+			log.Println("Skipping dir: ", dir[i].Name())
+			continue
+		}
+		fileData, err := os.ReadFile(filepath.Join(directoryName, dir[i].Name()))
+		if err != nil {
+			log.Println("Error reading file: ", dir[i].Name(), "with error: ", err)
+			continue
+		}
+		fileName := filepath.Base(dir[i].Name())
+		ext := filepath.Ext(fileName)
+		name := strings.TrimSuffix(fileName, ext)
+		taskFunction := TaskFunc{
+			TaskFunction: fileData,
+			Language:     ext,
+		}
+		r.Register(name, taskFunction)
+	}
+
+	keys := make([]string, 0, len(r.tasks))
+	for k := range r.tasks {
+		keys = append(keys, k)
+	}
+	log.Println("registered tasks:", keys)
+
+	return nil
 }
 
 func (r *Registry) Register(taskName string, taskFunc TaskFunc) error {
