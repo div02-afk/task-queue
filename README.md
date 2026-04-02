@@ -25,6 +25,7 @@ The current runtime is organized like this:
 4. `cmd/worker` starts a worker pool and an embedded scheduler loop.
 5. Workers block on the pending queue, move tasks into processing, execute registered handlers, then `Ack` or `Nack`.
 6. The scheduler polls scheduled tasks and requeues due one-off and cron tasks into the pending queue.
+   Due scheduled and cron tasks are inserted with `RPUSH` so they are consumed ahead of the normal FIFO backlog.
 7. `cmd/reaper` polls for expired task timeouts. Recovery and cleanup are still incomplete.
 
 Task handlers are now compiled to WebAssembly and executed by workers through Wazero.
@@ -81,6 +82,11 @@ Each task is stored as a Redis hash keyed as `task_metadata:<taskId>`. Redis als
 - `task_queue:dlq`
 - `task_set:scheduled`
 - `task_set:timeout`
+
+Pending queue behavior:
+
+- Immediate tasks use `LPUSH` and workers consume with `BLMOVE ... RIGHT LEFT`, which makes the default pending flow FIFO.
+- Due scheduled and cron tasks use `RPUSH`, so they land on the side workers pop first and therefore run with higher priority than the existing pending backlog.
 
 Current task kinds:
 
@@ -141,7 +147,7 @@ Notes:
   Uses a Redis blocking move from pending to processing, executes task logic via a WASM module (`alloc` + `execute`), and then acknowledges success or requeues/fails the task on error.
 
 - Scheduler:
-  Polls the scheduled set, promotes due tasks, and for cron tasks computes the next run before re-adding them to the scheduled set.
+  Polls the scheduled set, promotes due tasks, and for cron tasks computes the next run before re-adding them to the scheduled set. Promoted scheduled/cron tasks are `RPUSH`ed so they can preempt the normal pending queue backlog.
 
 - Reaper:
   Reads expired task IDs from the timeout set and logs them. Moving timed-out tasks to the DLQ is still a TODO in code.

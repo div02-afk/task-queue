@@ -270,7 +270,9 @@ func (r *RedisBroker) HandleScheduledTask(ctx context.Context, taskID string) er
 	requeue := func(extraFields map[string]string, extraOp func(redis.Pipeliner)) error {
 		now := time.Now().Format(time.RFC3339)
 		cmds, txErr := r.RedisClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			pipe.LPush(ctx, r.Config.PendingQueue, taskID)
+			// Workers pop from the right side of the pending list, so due
+			// scheduled/cron tasks are RPUSHed to run ahead of the normal backlog.
+			pipe.RPush(ctx, r.Config.PendingQueue, taskID)
 
 			hsetArgs := make([]interface{}, 0, 4+len(extraFields)*2)
 			hsetArgs = append(hsetArgs,
