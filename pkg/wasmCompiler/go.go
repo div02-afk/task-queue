@@ -18,6 +18,8 @@ func (c *GoWasmCompiler) Compile(srcPath string, outPath string) error {
 	cmd := exec.Command("tinygo", "build",
 		"-o", outPath,
 		"-target", "wasi",
+		"-opt=1",
+		"-no-debug",
 		srcPath,
 	)
 
