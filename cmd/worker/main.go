@@ -19,7 +19,7 @@ import (
 )
 
 func main() {
-	_ = godotenv.Load()
+	_ = godotenv.Overload()
 	logging.Setup(config.GetDefaultLoggingConfig())
 
 	ctx := context.Background()

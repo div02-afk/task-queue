@@ -99,30 +99,34 @@ func (r *Registry) RegisterDirectory(directoryName string) error {
 	if err != nil {
 		return err
 	}
-
+	wtGroup := sync.WaitGroup{}
 	for i := range dir {
-		if dir[i].IsDir() {
-			logger.Debug("skipping subdirectory", "name", dir[i].Name())
-			continue
-		}
-		fileData, err := os.ReadFile(filepath.Join(directoryName, dir[i].Name()))
-		if err != nil {
-			logger.Error("read task source failed", "name", dir[i].Name(), "error", err)
-			continue
-		}
-		fileName := filepath.Base(dir[i].Name())
-		ext := filepath.Ext(fileName)
-		name := strings.TrimSuffix(fileName, ext)
-		taskFunction := TaskFunc{
-			TaskFunction: fileData,
-			Language:     ext,
-		}
-		if err := r.Register(name, taskFunction); err != nil {
-			logger.Error("register task failed", "task_name", name, "error", err)
-			continue
-		}
+		wtGroup.Add(1)
+		go func() {
+			defer wtGroup.Done()
+			if dir[i].IsDir() {
+				logger.Debug("skipping subdirectory", "name", dir[i].Name())
+				return
+			}
+			fileData, err := os.ReadFile(filepath.Join(directoryName, dir[i].Name()))
+			if err != nil {
+				logger.Error("read task source failed", "name", dir[i].Name(), "error", err)
+				return
+			}
+			fileName := filepath.Base(dir[i].Name())
+			ext := filepath.Ext(fileName)
+			name := strings.TrimSuffix(fileName, ext)
+			taskFunction := TaskFunc{
+				TaskFunction: fileData,
+				Language:     ext,
+			}
+			if err := r.Register(name, taskFunction); err != nil {
+				logger.Error("register task failed", "task_name", name, "error", err)
+				return
+			}
+		}()
 	}
-
+	wtGroup.Wait()
 	keys := make([]string, 0, len(r.tasks))
 	for k := range r.tasks {
 		keys = append(keys, k)
